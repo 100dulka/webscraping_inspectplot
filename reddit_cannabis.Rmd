@@ -1,0 +1,438 @@
+---
+title: "Web Scraping Reddit and Text (Sentiment) Analysis"
+featured_image: assets/images/posts/2019/web-scraping/web-scraping.png
+featured_image_thumbnail: null
+hidden: yes
+layout: post
+tags:
+- textmining
+- webscraping
+- sentimentanalysis
+- wordcloud
+- R
+- reddit
+- cannabis
+- legalization
+- 420
+- canadalegalization
+featured: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/Users/jiristodulka/R/web_scraping/reddit_cannabis/")
+
+lapply(c("tidyverse", "rvest","rebus","stringr","lubridate","tidytext", "devtools","wordcloud2","colorRamps"), character.only = T, require)
+
+```
+
+# Screping & Formating "Variables"
+```{r Creating nodes}
+# rvest  package
+
+# scraping the url and Reading HTML
+url <- ("https://old.reddit.com/r/canadients/comments/9ovapz/legal_cannabis_in_canada_megathread/?limit=500")
+
+reviews <- url %>%
+  read_html() %>%
+  html_nodes('.entry')
+```
+
+
+```{r Scraping User Field}
+author <- reviews %>%
+  html_node(".author") %>%
+  html_text()%>%
+  str_trim() 
+
+idex_deleted <- which(author=="[deleted]")
+
+author[idex_deleted] <- c("unknown_1", "unknown_2", "unknown_3", "unknown_4", "unknown_5", "unknown_6", "unknown_7", "unknown_8", "unknown_9", "unknown_10", "unknown_11", "unknown_12")
+
+author <- as.factor(author)
+```
+
+```{r Scraping Points Field}
+likes <- reviews %>%
+  html_node(".score") %>%
+  html_text() %>%
+  word(1) %>%
+  as.integer() 
+```
+
+```{r Scraping Comment Field}
+comment <- reviews %>%
+  html_node(".md") %>%
+  html_text(trim = TRUE ) %>%
+  gsub("\n","",.)
+```
+
+
+```{r Scraping Time}
+date <- reviews %>%
+  html_node("time")%>%
+  html_attr("title")%>%
+  strptime(format = "%a %b %d %H:%M:%S %Y",tz = "UTC")%>%
+  ymd_hms()
+
+
+week_day <- reviews %>%
+  html_node("time")%>%
+  html_attr("title")%>%
+  word(1)%>%
+  factor(levels  = c("Mon","Tue","Wed","Thu","Fri","Sat","Sun"))
+
+month <- reviews %>%
+  html_node("time")%>%
+  html_attr("title")%>%
+  word(2)
+
+month_day <- reviews %>%
+  html_node("time")%>%
+  html_attr("title")%>%
+  word(3)
+
+year <- reviews %>%
+  html_node("time")%>%
+  html_attr("title")%>%
+  word(5)
+```
+
+
+#Data Frames 
+Flow: There are 3 data frames relating to each other. 1st dataset is from the vectors, 2nd tidy_data is dataset version created by unnest_token(). i.e. each word in comment column is spread, 3rd lexicon merges with the tidy_data faciliated by the inner_join().
+```{r Filtering for NAs and short comment (less than 5 ) in dataset}
+# Data frame from vectors
+dataset <- data.frame(author, likes, comment, date, week_day, month, month_day, year, stringsAsFactors = FALSE) %>%
+  filter(!is.na(author))%>%
+  # Filtering comments of one or few words
+  filter(str_count(comment)>=5) %>%
+  # creating ID for each comment so I can refer to it later
+  mutate(id = row_number())
+```
+
+```{r Tidy dataset}
+url_words <- tibble(
+  word = c("https","http")) #filternig weblinks
+
+tidy_data <- dataset %>% unnest_tokens(word, comment) %>% anti_join(stop_words) %>%  anti_join(url_words) %>% 
+# filtering "numeric" words  
+anti_join(tibble(word= as.character (c(1:10000000)))) %>%
+# stop word already filter but there were still redundent words, e.g. nchar(word) < 3
+  filter(nchar(word)>2) 
+
+rm(url_words)
+```
+
+```{r Sentimet Lexicin Join}
+data_sentiment <- tidy_data %>% 
+    # Group by author
+    group_by(author) %>% 
+    # Define a new column author_total; i.e. how many comments an author has posted
+    mutate(author_total=n()) %>%
+    ungroup() %>%
+    # Implement sentiment analysis with the NRC lexicon
+    inner_join(get_sentiments("nrc"), by="word")
+```
+
+# Dataset Description
+
+```{r Time Span}
+range(dataset$date) #time span
+range(dataset$date)[2]-range(dataset$date)[1]
+```
+```{r Participants in the Discussion}
+nlevels(dataset$author) #n levels
+```
+
+```{r Number of Comments}
+nrow(dataset) # n comments
+```
+
+
+##EDA
+### Wordclouds (minimum infoermation as frequency)
+```{r Word Cloud PLOT}
+tidy_data %>% select(word) %>% count(word,sort=T) %>%
+
+wordcloud2(backgroundColor = "black", color = "green")
+```
+
+```{r World Cloud Cannabis PLOT}
+figPath <- "/Users/jiristodulka/R/web_scraping/reddit_cannabis/canna_leaf.png"
+
+
+tidy_data %>% select(word) %>% count(word,sort=T) %>% 
+ # wordcloud2 unfortunatelly doe not know the argument random.order = F; impossible to plot words in decreasing frequency
+  
+wordcloud2(figPath = figPath, size = 3, backgroundColor = "black", color = "green")
+```
+
+```{r World Cloud 420 PLOT}
+tidy_data %>% select(word) %>% count(word,sort=T) %>%
+
+letterCloud(word = "420", backgroundColor = "black",color = "green", wordSize = 4)
+```
+
+
+Wednesday because the legalization happend on Wednesday 2018-10-17
+```{r Numeber of Comments in Time and PLOT}
+
+dataset %>% select(date,comment) %>% 
+  mutate(date = round_date(date, "1 day"))  %>% group_by(date) %>% mutate(n_comments = n()) %>% 
+  filter(date < ymd("2018-10-25")) %>%
+# Had to round  up the date object into "week" units, otherwise grouping a mutating would not work (too narrow interval)
+
+  ggplot(aes(date,n_comments)) +
+  geom_line(linetype = 1, color="green")+
+  ggtitle("Number of Comments in Time")+
+  theme_minimal()
+```
+
+
+
+```{r Most Frequent contributors PLOT}
+dataset %>%
+  group_by(author) %>%
+  summarise(Comments=n())%>%
+  arrange(desc(Comments))%>%
+  mutate(author = reorder(author, Comments)) %>%
+  head(5) %>%
+  
+  
+  ggplot(aes(author,Comments, fill=author))+
+  geom_col(show.legend = F)+
+  coord_flip()+
+  geom_text(aes(label = Comments))+
+  ggtitle("The Most Frequently Contributing Authors")
+```
+```{r Word Choice of the most frequent cntributors}
+data_sentiment %>%
+    # Filter for only negative words
+    filter(sentiment=="negative") %>%
+    # Count by word and station
+    count(word,author) %>%
+    # Group by station
+    group_by(author) %>%
+    # Take the top 10 words for each station
+    top_n(10) %>%
+    ungroup() %>%
+    mutate(word = reorder(paste(word, author, sep = "__"), n)) %>%
+    filter(author %in% c("BioSector", "ruglescdn",  "terrencemckenna", "frowawe" )) %>%
+    # Set up the plot with aes()
+    ggplot(aes(word,n,fill=author)) +
+    geom_col(show.legend = FALSE) +
+    scale_x_discrete(labels = function(x) gsub("__.+$", "", x)) +
+    facet_wrap(~ author, nrow = 2, scales = "free") +
+    coord_flip()
+```
+
+
+
+```{r Athors with the Greatest Score (PLOT) and the Most Popular Comments}
+# Athors with the Greatest Score
+dataset %>%
+  group_by(author) %>%
+  summarise(Likes = sum(likes))%>%
+  arrange(desc(Likes))%>%
+  mutate(author = reorder(author, Likes)) %>%
+  head(5) %>%
+  #ggplot it
+  ggplot(aes(author,Likes, fill=author))+
+  geom_col(show.legend = F)+
+  coord_flip()+
+  geom_text(aes(label = Likes))+
+  ggtitle("The Most Popular Authors")
+
+#the Most Popular Comments
+dataset %>%
+  select(id,author,likes)%>%
+  arrange(desc(likes))%>%
+  head(5)
+```
+```{r Athors with the Lowest Score (PLOT) and the Least Popular Comments}
+# Athors with the Lowest Score
+dataset %>%
+  group_by(author) %>%
+  summarise(Likes = sum(likes))%>%
+  arrange(desc(Likes))%>%
+  filter(Likes!="") %>%
+  mutate(author = reorder(author, Likes)) %>%
+  tail(5) %>%
+  
+  ggplot(aes(x = reorder(author, desc(author)),Likes, fill=author))+
+  geom_col(show.legend = F)+
+  scale_y_reverse()+ #reverse it display the outhor with the lowest score at the top of the plot
+  coord_flip()+
+  geom_text(aes(label = Likes))+
+  ggtitle("The Least Popular Authors in the Discussion")
+
+#Least Popular Comments
+dataset %>%
+  select(id, author,likes) %>%
+  arrange(likes) %>%
+  head(5)
+
+```
+H0:{The authors with overall greatest score} $\in$ {The authors of the longest comments}
+```{r hypothesis_01}
+ author_popular <- as.vector(
+  dataset %>%
+  select(id, author,likes) %>%
+  arrange(likes) %>%
+  select(author) %>%
+  head(10)
+ )  
+  
+  author_grafoman <- as.vector(
+    tidy_data %>%
+    count(author, sort = TRUE) %>%
+    select(author) %>%
+    head(10)
+  )
+  which(author_popular == author_grafoman) #Testing the hypothesis
+  
+  rm(author_grafoman,author_popular)
+```
+We can reject H0 and conclude the authors with the longest comments are not the most favorite ones!
+
+
+```{r What Authors use the most positive or negative words?}
+# Which authors use the most negative words?
+data_sentiment %>% 
+    count(author, sentiment, author_total) %>%
+    # Define a new column percent
+    mutate(percent=n/author_total) %>%
+    # Filter only for negative words
+    filter(sentiment=="negative") %>%
+    # Arrange by percent
+    arrange(desc(percent))
+  
+    
+# Now do the same but for positive words
+data_sentiment %>% 
+    count(author, sentiment, author_total) %>%
+    mutate(percent=n/author_total) %>%
+    filter(sentiment=="positive") %>%
+    arrange(desc(percent))
+```
+
+```{r Which words contribute to the sentiment scores? Visual}
+data_sentiment %>%
+    # Count by word and sentiment
+    count(word,sentiment) %>%
+    # Group by sentiment
+    group_by(sentiment) %>%
+    # Take the top 10 words for each sentiment
+    top_n(10) %>%
+    ungroup() %>%
+    mutate(word = reorder(word, n)) %>%
+    # Set up the plot with aes()
+    ggplot(aes(word,n,fill=sentiment)) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~ sentiment, scales = "free") +
+    coord_flip()+
+    ylab("Count")
+```
+```{r Sentiment over time Visual}
+
+sentiment_by_time <- tidy_data %>%
+    # Define a new column using floor_date()
+    mutate(date_floor = floor_date(date, unit = "1 day")) %>%
+    # Group by date_floor
+    group_by(date_floor) %>%
+    mutate(total_words = n()) %>%
+    ungroup() %>%
+    
+    # Implement sentiment analysis using the NRC lexicon
+    inner_join(get_sentiments("nrc"), by="word")
+
+sentiment_by_time %>%
+    # Filter for positive and negative words
+    filter(sentiment %in% c("positive","negative")) %>%
+    filter(date_floor < ymd("2018-11-10")) %>%
+    # Count by date, sentiment, and total_words
+    count(date_floor, sentiment, total_words) %>%
+    ungroup() %>%
+    mutate(percent = n / total_words) %>%
+    
+    # Set up the plot with aes()
+    ggplot(aes(date_floor,percent,col=sentiment)) +
+    geom_line(size = 1.5) +
+    geom_smooth(method = "lm", se = FALSE, lty = 2) +
+    expand_limits(y = 0)+
+    ggtitle("Sentiment Over Time")
+```
+
+
+```{r Athors and Relative Popularity}
+dataset %>%
+  group_by(author) %>%
+  mutate(relative_popularity = sum(likes)/n())%>%
+  select(author,relative_popularity)%>%
+  arrange(desc(relative_popularity))%>%
+  head(10)
+```
+
+```{r Athors and Relative Unpopularity}
+dataset %>%
+  group_by(author) %>%
+  summarise(rel_unpularity = sum(likes)/n())%>%
+  arrange(rel_unpularity)%>%
+  head(10)
+```
+
+What is the sentiment of of greatest cotrubutors, most popular, the least popular?
+How was the sentiment developing (relative to the a number of comments per unit of time) ?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
